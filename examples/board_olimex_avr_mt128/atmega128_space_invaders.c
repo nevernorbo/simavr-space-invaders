@@ -27,20 +27,6 @@ static void port_init()
 	DDRG = 0b00000000;
 }
 
-// TIMER-BASED RANDOM NUMBER GENERATOR ---------------------------------------
-
-static void rnd_init()
-{
-	TCCR0 |= (1 << CS00); // Timer 0 no prescaling (@FCPU)
-	TCNT0 = 0;			  // init counter
-}
-
-// generate a value between 0 and max
-static int rnd_gen(int max)
-{
-	return TCNT0 % max;
-}
-
 // SOUND GENERATOR -----------------------------------------------------------
 
 typedef struct
@@ -140,6 +126,8 @@ static void button_unlock()
 #define CG_RAM_ADDR 0x00000040
 #define DD_RAM_ADDR 0x00000080
 #define DD_RAM_ADDR2 0x000000C0
+
+#define GET_BASE_ADDRESS(row) ((row) == 0 ? DD_RAM_ADDR : DD_RAM_ADDR2)
 
 // #define		ENTRY_INC	    0x00000007	//LCD increment
 // #define		ENTRY_DEC	    0x00000005	//LCD decrement
@@ -246,13 +234,10 @@ static void lcd_send_line2(char *str)
 
 // THE GAME ==================================================================
 
-// Macros/sprite definitions
-#define CHARMAP_SIZE 8
+/* Sprites (characters) */
 
+#define CHARMAP_SIZE 8
 #define PLAYER_SPRITE 0
-#define ENEMY_SPRITE1 1
-#define ENEMY_SPRITE2 2
-#define ENEMY_SPRITE3 3
 
 static unsigned char CHARMAP[CHARMAP_SIZE][8] = {
 	{
@@ -299,10 +284,78 @@ static unsigned char CHARMAP[CHARMAP_SIZE][8] = {
 
 #define PLAYER_BULLET_SLOT 0
 #define PLAYER_SLOT 1
+#define DYNAMIC_SLOT_START_INDEX 2
 
-static unsigned char STORED_CHARMAP[CHARMAP_SIZE][8]; // Used for storing dynamic characters
+static unsigned char STORED_CHARMAP[CHARMAP_SIZE][8]; // Used for dynamically storing custom characters
 
-static void chars_init()
+/* Character Utils */
+
+#define CHECK_BIT(binary_num, pos) ((binary_num) & (1 << (pos)))
+
+int is_char_equal(const unsigned char a[8], const unsigned char b[8])
+{
+	for (int i = 0; i < 8; i++)
+	{
+		if (a[i] != b[i])
+		{
+			return 0;
+		}
+	}
+	return 1;
+}
+
+void store_character(unsigned char character[8], int slot)
+{
+	lcd_send_command(CG_RAM_ADDR + slot * 8);
+	for (int c = 0; c < 8; c++)
+	{
+		lcd_send_data(character[c]);
+		STORED_CHARMAP[slot][c] = character[c];
+	}
+}
+
+void render_custom_character(int slot, int row, int column)
+{
+	lcd_send_command(GET_BASE_ADDRESS(row) + column);
+	lcd_send_data(slot);
+}
+
+void merge_characters(unsigned char character[8], unsigned char other_character[8])
+{
+	for (int c = 0; c < 8; c++)
+	{
+		character[c] |= other_character[c];
+	}
+	return character;
+}
+
+void shift_character_down(unsigned char character[8], unsigned char shifted_character[8])
+{
+	for (int i = 0; i < 4; i++)
+	{
+		shifted_character[i] = 0;
+	}
+
+	for (int c = 4; c < 8; c++)
+	{
+		shifted_character[c] = character[c - 4];
+	}
+}
+
+unsigned int render_character_if_stored(unsigned char character[8], int row, int column)
+{
+	for (int i = 0; i < CHARMAP_SIZE; i++)
+	{
+		if (is_char_equal(character, STORED_CHARMAP[i]))
+		{
+			render_custom_character(i, row, column);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static void characters_init()
 {
 	for (int c = 0; c < CHARMAP_SIZE; ++c)
 	{
@@ -315,19 +368,20 @@ static void chars_init()
 	}
 }
 
-// Type definitions
-struct game_state_t
+/* Type definitions */
+
+enum game_state_t
 {
-	unsigned int game_over;
-	unsigned int victory;
-	unsigned int score;
+	START_SCREEN,
+	PLAYING,
+	GAME_OVER,
+	VICTORY
 };
 
 struct player_t
 {
 	unsigned int sprite;
 	unsigned int column;
-	unsigned int health;
 };
 
 struct enemy_t
@@ -335,7 +389,7 @@ struct enemy_t
 	unsigned int sprite;
 	unsigned int alive;
 	unsigned int column;
-	unsigned int half_row; // There are 4 half rows on the playfield
+	int half_row; // There are 4 half rows on the playfield, signed integer!
 };
 
 struct bullet_t
@@ -346,7 +400,8 @@ struct bullet_t
 	unsigned int y_position;
 };
 
-// Global variables
+/* Global variables */
+
 #define ENEMY_COUNT 18
 #define PLAYFIELD_ROWS 2
 #define PLAYFIELD_COLUMNS 16
@@ -354,17 +409,25 @@ struct bullet_t
 #define PLAYFIELD_START_X 0
 #define PLAYFIELD_END_X 15
 
-#define DYNAMIC_SLOT_START_INDEX 2
-
+// Used for rendering, stores four bits that correspond to 0b<bullet><bottom enemy><top enemy><player>
 unsigned int playfield[PLAYFIELD_ROWS][PLAYFIELD_COLUMNS];
+// Bit positions for the playfield
+#define PLAYER_BIT 0
+#define TOP_ENEMY_BIT 1
+#define BOTTOM_ENEMY_BIT 2
+#define BULLET_BIT 3
+
 unsigned int rerender = 0;
-unsigned int dynamic_slot_index = DYNAMIC_SLOT_START_INDEX;
+unsigned int dynamic_slot = DYNAMIC_SLOT_START_INDEX;
 
 struct player_t player;
 struct bullet_t player_bullet;
 struct enemy_t enemies[ENEMY_COUNT];
-struct game_state_t game_state = {0, 0, 0};
+enum game_state_t game_state = START_SCREEN;
+unsigned score = 0;
 unsigned enemy_direction = 1;
+
+/* Position management */
 
 void init_positions()
 {
@@ -385,7 +448,7 @@ void update_positions()
 
 	for (int i = 0; i < ENEMY_COUNT; i++)
 	{
-		if (enemies[i].alive)
+		if (enemies[i].alive && enemies[i].half_row >= 0)
 		{
 			if (enemies[i].half_row % 2 == 0)
 			{
@@ -404,20 +467,14 @@ void update_positions()
 	}
 }
 
-int charmap_equal(const unsigned char a[8], const unsigned char b[8])
-{
-	for (int i = 0; i < 8; i++)
-	{
-		if (a[i] != b[i])
-		{
-			return 0;
-		}
-	}
-	return 1;
-}
+/* Rendering */
 
-#define CHECK_BIT(binary_num, pos) ((binary_num) & (1 << (pos)))
-#define GET_BASE_ADDRESS(row) ((row) == 0 ? DD_RAM_ADDR : DD_RAM_ADDR2)
+enum render_method_t
+{
+	PLAYER,
+	PLAYER_BULLET,
+	DYNAMIC
+};
 
 void clear_screen()
 {
@@ -440,38 +497,25 @@ void render_positions()
 
 	for (int i = 0; i < PLAYFIELD_ROWS; i++)
 	{
-		unsigned int base_address = GET_BASE_ADDRESS(i);
-
 		for (int j = PLAYFIELD_START_X; j < PLAYFIELD_COLUMNS; j++)
 		{
-			unsigned int render_charmap = 0;
-			unsigned int player_render = 0;
-			unsigned int bullet_render = 0;
-			unsigned char charmap_to_render[8] = {
-				0b00000,
-				0b00000,
-				0b00000,
-				0b00000,
-				0b00000,
-				0b00000,
-				0b00000,
-				0b00000,
-			};
+			if (playfield[i][j] == 0)
+			{
+				continue;
+			}
+
+			enum render_method_t render_method = DYNAMIC;
+			unsigned char char_to_render[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 
 			// Player
-			if (i == 1 && CHECK_BIT(playfield[i][j], 0))
+			if (i == 1 && CHECK_BIT(playfield[i][j], PLAYER_BIT))
 			{
-				for (int c = 0; c < 8; c++)
-				{
-					charmap_to_render[c] |= CHARMAP[player.sprite][c];
-				}
-
-				render_charmap = 1;
-				player_render = 1;
+				merge_characters(char_to_render, CHARMAP[player.sprite]);
+				render_method = PLAYER;
 			}
 
 			// First enemy
-			if (CHECK_BIT(playfield[i][j], 1))
+			if (CHECK_BIT(playfield[i][j], TOP_ENEMY_BIT))
 			{
 				// Find which enemy is at this position
 				for (int enemy_idx = 0; enemy_idx < ENEMY_COUNT; enemy_idx++)
@@ -482,18 +526,14 @@ void render_positions()
 						enemies[enemy_idx].half_row / 2 == i &&
 						enemies[enemy_idx].half_row % 2 == 0) // top half
 					{
-						for (int c = 0; c < 8; c++)
-						{
-							charmap_to_render[c] |= CHARMAP[enemies[enemy_idx].sprite][c];
-						}
-						render_charmap = 1;
+						merge_characters(char_to_render, CHARMAP[enemies[enemy_idx].sprite]);
 						break;
 					}
 				}
 			}
 
 			// Second enemy
-			if (CHECK_BIT(playfield[i][j], 2))
+			if (CHECK_BIT(playfield[i][j], BOTTOM_ENEMY_BIT))
 			{
 				// Find which enemy is at this position
 				for (int enemy_idx = 0; enemy_idx < ENEMY_COUNT; enemy_idx++)
@@ -503,138 +543,67 @@ void render_positions()
 						enemies[enemy_idx].half_row / 2 == i &&
 						enemies[enemy_idx].half_row % 2 == 1) // bottom half
 					{
-						unsigned char half_row_down[8] = {
-							0b00000,
-							0b00000,
-							0b00000,
-							0b00000,
-							0b00000,
-							0b00000,
-							0b00000,
-							0b00000,
-						};
+						unsigned char shifted_character[8];
+						shift_character_down(CHARMAP[enemies[enemy_idx].sprite], shifted_character);
+						merge_characters(char_to_render, shifted_character);
 
-						// Shift down by 4 rows
-						for (int c = 4; c < 8; c++)
-						{
-							half_row_down[c] = CHARMAP[enemies[enemy_idx].sprite][c - 4];
-						}
-
-						for (int c = 0; c < 8; c++)
-						{
-							charmap_to_render[c] |= half_row_down[c];
-						}
-						render_charmap = 1;
 						break;
 					}
 				}
 			}
 
 			// Bullet
-			if (CHECK_BIT(playfield[i][j], 3))
+			if (CHECK_BIT(playfield[i][j], BULLET_BIT))
 			{
-				if (player_bullet.active && player_bullet.y_position != 8) // Workaround to skip the row render on row change (would cause an annoying artifact)
+				if (player_bullet.active && player_bullet.y_position != 8) // Workaround to skip the render on row change (would cause an annoying artifact)
 				{
 					int bullet_row = player_bullet.y_position % 8;
-					unsigned char bullet_map[8] = {
-						0b00000,
-						0b00000,
-						0b00000,
-						0b00000,
-						0b00000,
-						0b00000,
-						0b00000,
-						0b00000,
-					};
+					unsigned char bullet_map[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 					bullet_map[bullet_row] = 0b00100;
 
-					for (int c = 0; c < 8; c++)
-					{
-						charmap_to_render[c] |= bullet_map[c];
-					}
-
-					render_charmap = 1;
-					bullet_render = 1;
+					merge_characters(char_to_render, bullet_map);
+					render_method = PLAYER_BULLET;
 				}
 			}
 
-			if (render_charmap)
+			// Render character if it's already stored
+			if (render_character_if_stored(char_to_render, i, j))
 			{
-				int is_stored_map = 0;
-				for (int map_index = 0; map_index < CHARMAP_SIZE; map_index++)
-				{
-					if (charmap_equal(charmap_to_render, STORED_CHARMAP[map_index]))
-					{
-						lcd_send_command(base_address + j);
-						lcd_send_data(map_index);
-						is_stored_map = 1;
-						break;
-					}
-				}
+				continue;
+			}
 
-				if (is_stored_map)
-				{
-					continue;
-				}
+			// Prevent dynamic slot from being out of bounds and start on the first dynamic index
+			if (dynamic_slot == CHARMAP_SIZE)
+			{
+				dynamic_slot = DYNAMIC_SLOT_START_INDEX;
+			}
 
-				if (dynamic_slot_index == CHARMAP_SIZE)
-				{
-					dynamic_slot_index = DYNAMIC_SLOT_START_INDEX;
-				}
-
-				if (bullet_render)
-				{
-					lcd_send_command(CG_RAM_ADDR + PLAYER_BULLET_SLOT * 8);
-					for (int c = 0; c < 8; c++)
-					{
-						lcd_send_data(charmap_to_render[c]);
-						STORED_CHARMAP[PLAYER_BULLET_SLOT][c] = charmap_to_render[c];
-					}
-
-					lcd_send_command(base_address + j);
-					lcd_send_data(PLAYER_BULLET_SLOT);
-
-					continue;
-				}
-
-				if (player_render)
-				{
-					lcd_send_command(CG_RAM_ADDR + PLAYER_SLOT * 8);
-					for (int c = 0; c < 8; c++)
-					{
-						lcd_send_data(charmap_to_render[c]);
-						STORED_CHARMAP[PLAYER_SLOT][c] = charmap_to_render[c];
-					}
-
-					lcd_send_command(base_address + j);
-					lcd_send_data(PLAYER_SLOT);
-
-					continue;
-				}
-
-				lcd_send_command(CG_RAM_ADDR + dynamic_slot_index * 8);
-				for (int c = 0; c < 8; c++)
-				{
-					lcd_send_data(charmap_to_render[c]);
-					STORED_CHARMAP[dynamic_slot_index][c] = charmap_to_render[c];
-				}
-
-				lcd_send_command(base_address + j);
-				lcd_send_data(dynamic_slot_index);
-
-				dynamic_slot_index++;
+			switch (render_method)
+			{
+			case PLAYER:
+				store_character(char_to_render, PLAYER_SLOT);
+				render_custom_character(PLAYER_SLOT, i, j);
+				break;
+			case PLAYER_BULLET:
+				store_character(char_to_render, PLAYER_BULLET_SLOT);
+				render_custom_character(PLAYER_BULLET_SLOT, i, j);
+				break;
+			default:
+				store_character(char_to_render, dynamic_slot);
+				render_custom_character(dynamic_slot, i, j);
+				dynamic_slot++;
+				break;
 			}
 		}
 	}
 }
 
-// Player
+/* Player */
+
 void player_init()
 {
 	player.sprite = PLAYER_SPRITE;
 	player.column = 7;
-	player.health = 3;
-	move_player(0);
 }
 
 void handle_input(int btn)
@@ -662,7 +631,8 @@ void move_player(int direction)
 	rerender = 1;
 }
 
-// Bullets
+/* Bullet */
+
 void player_bullet_init()
 {
 	player_bullet.active = 0;
@@ -701,10 +671,6 @@ void player_bullets_move()
 
 		if (check_enemy_hit())
 		{
-			if (game_state.score == ENEMY_COUNT)
-			{
-				game_state.victory;
-			}
 			return;
 		}
 
@@ -725,7 +691,7 @@ void player_bullets_move()
 	}
 }
 
-// Enemies
+/* Enemies */
 void enemies_init()
 {
 	for (int i = 0; i < ENEMY_COUNT; i++)
@@ -734,14 +700,6 @@ void enemies_init()
 		enemies[i].sprite = (i % 3) + 1;
 		enemies[i].column = (i % (ENEMY_COUNT / 2)) + PLAYFIELD_START_X;
 		enemies[i].half_row = i / (ENEMY_COUNT / 2);
-	}
-}
-
-void check_for_game_over(struct enemy_t *enemy)
-{
-	if (enemy->alive && enemy->half_row + 1 == PLAYFIELD_ROWS * 2)
-	{
-		game_state.game_over = 1;
 	}
 }
 
@@ -791,21 +749,31 @@ void enemies_move()
 void enemy_killed(struct enemy_t *enemy)
 {
 	enemy->alive = 0;
-	game_state.score++;
-	if (game_state.score == ENEMY_COUNT)
+	score++;
+	if (score == ENEMY_COUNT)
 	{
-		game_state.victory = 1;
+		game_state = VICTORY;
 	}
 }
 
+/* Game state */
+
 void game_state_init()
 {
-	game_state.score = 0;
-	game_state.game_over = 0;
-	game_state.victory = 0;
+	game_state = PLAYING;
+	score = 0;
 	enemy_direction = 1;
 }
 
+void check_for_game_over(struct enemy_t *enemy)
+{
+	if (enemy->alive && enemy->half_row + 1 == PLAYFIELD_ROWS * 2)
+	{
+		game_state = GAME_OVER;
+	}
+}
+
+/* Start screen */
 void render_start_screen()
 {
 	lcd_send_command(DD_RAM_ADDR);
@@ -814,11 +782,22 @@ void render_start_screen()
 	lcd_send_data(PLAYER_SPRITE);
 }
 
+/* Initialize the game */
+void init_game()
+{
+	game_state_init();
+	player_init();
+	player_bullet_init();
+	enemies_init();
+	update_positions(); // also initalizes the positions
+	render_positions();
+}
+
 int main()
 {
 	port_init();
 	lcd_init();
-	chars_init();
+	characters_init();
 
 	render_start_screen();
 
@@ -828,13 +807,8 @@ int main()
 		{
 			button_unlock();
 		}
-		
-		game_state_init();
-		player_init();
-		player_bullet_init();
-		enemies_init();
-		update_positions(); // also initalizes the positions
-		render_positions();
+
+		init_game();
 		long int delay = 0;
 
 		while (1) // Game loop
@@ -844,6 +818,7 @@ int main()
 				enemies_move();
 				delay = 0;
 			}
+			delay++;
 
 			handle_input(button_pressed());
 			player_bullets_move();
@@ -855,23 +830,20 @@ int main()
 				rerender = 0;
 			}
 
-			if (game_state.game_over || game_state.victory)
+			if (game_state == GAME_OVER || game_state == VICTORY)
 			{
 				break;
 			}
 
-			delay++;
 			button_unlock();
 		}
 
-		if (game_state.game_over)
+		if (game_state == GAME_OVER)
 		{
-			clear_screen();
 			lcd_send_line1("    GAME OVER");
 		}
-		else if (game_state.victory)
+		else if (game_state == VICTORY)
 		{
-			clear_screen();
 			lcd_send_line1("    VICTORY");
 		}
 	}
