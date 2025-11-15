@@ -400,9 +400,15 @@ struct bullet_t
 	unsigned int y_position;
 };
 
+struct level_t
+{
+	long int enemy_speed;
+	unsigned int enemy_count;
+};
+
 /* Global variables */
 
-#define ENEMY_COUNT 18
+// #define ENEMY_COUNT 18
 #define PLAYFIELD_ROWS 2
 #define PLAYFIELD_COLUMNS 16
 
@@ -420,12 +426,18 @@ unsigned int playfield[PLAYFIELD_ROWS][PLAYFIELD_COLUMNS];
 unsigned int rerender = 0;
 unsigned int dynamic_slot = DYNAMIC_SLOT_START_INDEX;
 
+#define LEVELS_COUNT 4
+struct level_t levels[LEVELS_COUNT] = {{0, 16}, {25000, 18}, {50000, 20}, {75000, 22}};
+unsigned int current_level_index = 0;
+struct level_t current_level;
+
 struct player_t player;
 struct bullet_t player_bullet;
-struct enemy_t enemies[ENEMY_COUNT];
+struct enemy_t enemies[22];
 enum game_state_t game_state = START_SCREEN;
-unsigned score = 0;
-unsigned enemy_direction = 1;
+unsigned int enemies_killed = 0;
+unsigned int score = 0;
+int enemy_direction = 1;
 
 /* Position management */
 
@@ -446,7 +458,7 @@ void update_positions()
 
 	playfield[1][player.column] |= 0b0001;
 
-	for (int i = 0; i < ENEMY_COUNT; i++)
+	for (int i = 0; i < current_level.enemy_count; i++)
 	{
 		if (enemies[i].alive && enemies[i].half_row >= 0)
 		{
@@ -476,7 +488,8 @@ enum render_method_t
 	DYNAMIC
 };
 
-void render_positions()
+//! This has to be in a separate loop from the 'render_positions()' functions, without it the screen will flicker
+void clear_screen()
 {
 	for (int i = 0; i < PLAYFIELD_ROWS; i++)
 	{
@@ -486,6 +499,22 @@ void render_positions()
 			{
 				lcd_send_command(GET_BASE_ADDRESS(i) + j);
 				lcd_send_data(' ');
+			}
+		}
+	}
+}
+
+void render_positions()
+{
+	clear_screen();
+
+	for (int i = 0; i < PLAYFIELD_ROWS; i++)
+	{
+		for (int j = PLAYFIELD_START_X; j < PLAYFIELD_COLUMNS; j++)
+		{
+			if (playfield[i][j] == 0)
+			{
+				continue;
 			}
 
 			enum render_method_t render_method = DYNAMIC;
@@ -502,7 +531,7 @@ void render_positions()
 			if (CHECK_BIT(playfield[i][j], TOP_ENEMY_BIT))
 			{
 				// Find which enemy is at this position
-				for (int enemy_idx = 0; enemy_idx < ENEMY_COUNT; enemy_idx++)
+				for (int enemy_idx = 0; enemy_idx < current_level.enemy_count; enemy_idx++)
 				{
 					if (
 						enemies[enemy_idx].alive &&
@@ -520,7 +549,7 @@ void render_positions()
 			if (CHECK_BIT(playfield[i][j], BOTTOM_ENEMY_BIT))
 			{
 				// Find which enemy is at this position
-				for (int enemy_idx = 0; enemy_idx < ENEMY_COUNT; enemy_idx++)
+				for (int enemy_idx = 0; enemy_idx < current_level.enemy_count; enemy_idx++)
 				{
 					if (enemies[enemy_idx].alive &&
 						enemies[enemy_idx].column == j &&
@@ -635,7 +664,7 @@ void player_shoot()
 
 unsigned int check_enemy_hit()
 {
-	for (int i = 0; i < ENEMY_COUNT; i++)
+	for (int i = 0; i < current_level.enemy_count; i++)
 	{
 		if (enemies[i].alive && enemies[i].column == player_bullet.column && enemies[i].half_row * 2 == player_bullet.y_position / 2)
 		{
@@ -678,21 +707,21 @@ void player_bullets_move()
 /* Enemies */
 void enemies_init()
 {
-	for (int i = 0; i < ENEMY_COUNT; i++)
+	for (int i = 0; i < current_level.enemy_count; i++)
 	{
 		enemies[i].alive = 1;
 		enemies[i].sprite = (i % 3) + 1;
-		enemies[i].column = (i % (ENEMY_COUNT / 2)) + PLAYFIELD_START_X;
-		enemies[i].half_row = i / (ENEMY_COUNT / 2);
+		enemies[i].column = (i % (current_level.enemy_count / 2)) + PLAYFIELD_START_X;
+		enemies[i].half_row = i / (current_level.enemy_count / 2);
 	}
 }
 
 void enemies_move()
 {
 	unsigned int wrap = 0;
-	for (int i = 0; i < ENEMY_COUNT / 2; i++)
+	for (int i = 0; i < current_level.enemy_count / 2; i++)
 	{
-		int j = ENEMY_COUNT / 2 - (i + 1); // Here to find the enemy that causes wrapping faster by scanning from both edges
+		int j = current_level.enemy_count / 2 - (i + 1); // Here to find the enemy that causes wrapping faster by scanning from both edges
 
 		if (enemies[i].alive && ((enemy_direction == -1 && enemies[i].column == PLAYFIELD_START_X) ||
 								 (enemy_direction == 1 && enemies[i].column == PLAYFIELD_END_X)))
@@ -711,7 +740,7 @@ void enemies_move()
 
 	if (wrap)
 	{
-		for (int j = 0; j < ENEMY_COUNT; j++)
+		for (int j = 0; j < current_level.enemy_count; j++)
 		{
 			enemies[j].half_row += 1;
 			check_for_game_over(&enemies[j]);
@@ -720,7 +749,7 @@ void enemies_move()
 	}
 	else
 	{
-		for (int j = 0; j < ENEMY_COUNT; j++)
+		for (int j = 0; j < current_level.enemy_count; j++)
 		{
 			enemies[j].column += enemy_direction;
 			check_for_game_over(&enemies[j]);
@@ -733,20 +762,37 @@ void enemies_move()
 void enemy_killed(struct enemy_t *enemy)
 {
 	enemy->alive = 0;
+	enemies_killed++;
 	score++;
-	if (score == ENEMY_COUNT)
+
+	if (enemies_killed == current_level.enemy_count)
 	{
-		game_state = VICTORY;
+		if (current_level_index == LEVELS_COUNT - 1)
+		{
+			game_state = VICTORY;
+			return;
+		}
+		else
+		{
+			next_level();
+		}
 	}
 }
 
 /* Game state */
 
-void game_state_init()
+void game_state_init(unsigned int start_new)
 {
+	if (start_new)
+	{
+		current_level_index = 0;
+		score = 0;
+	}
+
 	game_state = PLAYING;
-	score = 0;
+	enemies_killed = 0;
 	enemy_direction = 1;
+	current_level = levels[current_level_index];
 }
 
 void check_for_game_over(struct enemy_t *enemy)
@@ -766,15 +812,56 @@ void render_start_screen()
 	lcd_send_data(PLAYER_SPRITE);
 }
 
-/* Initialize the game */
-void init_game()
+void render_current_level_screen()
 {
-	game_state_init();
+	lcd_send_command(DD_RAM_ADDR2 + player.column);
+	lcd_send_text(" ");
+
+	lcd_send_command(DD_RAM_ADDR);
+	for (int i = 0; i < LEVELS_COUNT; i++)
+	{
+		char buffer[4];
+		if (i == current_level_index)
+		{
+			sprintf(buffer, " [%d] ", i + 1);
+		}
+		else
+		{
+			sprintf(buffer, " %d  ", i + 1);
+		}
+		lcd_send_text(buffer);
+	}
+
+	char buf[2];
+	buf[0] = 255;
+	buf[1] = '\0';
+
+	lcd_send_command(DD_RAM_ADDR2);
+	for (int i = 0; i < 16; i++)
+	{
+		lcd_send_text(buf);
+		_delay_ms(800);
+	}
+}
+
+/* Initialize the game */
+void init_game(unsigned int start_new)
+{
+	game_state_init(start_new);
 	player_init();
 	player_bullet_init();
 	enemies_init();
 	update_positions(); // also initalizes the positions
 	render_positions();
+}
+
+void next_level()
+{
+	current_level_index++;
+	current_level = levels[current_level_index];
+
+	render_current_level_screen();
+	init_game(0);
 }
 
 int main()
@@ -792,12 +879,12 @@ int main()
 			button_unlock();
 		}
 
-		init_game();
+		init_game(1);
 		long int delay = 0;
 
 		while (1) // Game loop
 		{
-			if (delay == 300000)
+			if (delay == 300000 - current_level.enemy_speed)
 			{
 				enemies_move();
 				delay = 0;
@@ -822,13 +909,18 @@ int main()
 			button_unlock();
 		}
 
+		char score_buffer[10];
+		sprintf(score_buffer, "SCORE  %d", score);
+
 		if (game_state == GAME_OVER)
 		{
 			lcd_send_line1("    GAME OVER");
+			lcd_send_line2(score_buffer);
 		}
 		else if (game_state == VICTORY)
 		{
 			lcd_send_line1("    VICTORY");
+			lcd_send_line2(score_buffer);
 		}
 	}
 }
