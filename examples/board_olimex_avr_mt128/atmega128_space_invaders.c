@@ -476,32 +476,16 @@ enum render_method_t
 	DYNAMIC
 };
 
-void clear_screen()
-{
-	for (int i = 0; i < PLAYFIELD_ROWS; i++)
-	{
-		for (int j = PLAYFIELD_START_X; j < PLAYFIELD_COLUMNS; j++)
-		{
-			if (playfield[i][j] == 0b0000)
-			{
-				lcd_send_command(GET_BASE_ADDRESS(i) + j);
-				lcd_send_data(' ');
-			}
-		}
-	}
-}
-
 void render_positions()
 {
-	clear_screen();
-
 	for (int i = 0; i < PLAYFIELD_ROWS; i++)
 	{
 		for (int j = PLAYFIELD_START_X; j < PLAYFIELD_COLUMNS; j++)
 		{
 			if (playfield[i][j] == 0)
 			{
-				continue;
+				lcd_send_command(GET_BASE_ADDRESS(i) + j);
+				lcd_send_data(' ');
 			}
 
 			enum render_method_t render_method = DYNAMIC;
