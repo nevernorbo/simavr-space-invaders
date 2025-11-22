@@ -873,6 +873,7 @@ int main()
 
 		timer_init();
 		init_game(1);
+		render_current_level_screen();
 
 		while (1) // Game loop
 		{
