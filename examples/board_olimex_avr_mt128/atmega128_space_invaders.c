@@ -28,41 +28,6 @@ static void port_init()
 	DDRG = 0b00000000;
 }
 
-// SOUND GENERATOR -----------------------------------------------------------
-
-typedef struct
-{
-	int freq;
-	int length;
-} tune_t;
-
-static tune_t TUNE_START[] = {{2000, 40}, {0, 0}};
-static tune_t TUNE_LEVELUP[] = {{3000, 20}, {0, 0}};
-static tune_t TUNE_GAMEOVER[] = {{1000, 200}, {1500, 200}, {2000, 400}, {0, 0}};
-
-static void play_note(int freq, int len)
-{
-	for (int l = 0; l < len; ++l)
-	{
-		int i;
-		PORTE = (PORTE & 0b11011111) | 0b00010000; // set bit4 = 1; set bit5 = 0
-		for (i = freq; i; i--)
-			;
-		PORTE = (PORTE | 0b00100000) & 0b11101111; // set bit4 = 0; set bit5 = 1
-		for (i = freq; i; i--)
-			;
-	}
-}
-
-static void play_tune(tune_t *tune)
-{
-	while (tune->freq != 0)
-	{
-		play_note(tune->freq, tune->length);
-		++tune;
-	}
-}
-
 // BUTTON HANDLING -----------------------------------------------------------
 
 #define BUTTON_NONE 0
@@ -875,23 +840,19 @@ void next_level()
 
 void timer_init()
 {
-	TCCR0 |= (1 << WGM01) | (1 << CS00) | (1 << CS02); // set prescaler
-
-	OCR0 = 155;
-
-	TIMSK |= (1 << OCIE0); // enable compare match interrupt
-	TCNT0 = 0;			   // init counter
+	TCCR0 |= (1 << CS00) | (1 << CS02); // set prescaler
+	TIMSK |= (1 << OCIE0);				// enable compare match interrupt
+	TCNT0 = 0;							// init counter
 
 	sei();
 }
 
 ISR(TIMER0_COMP_vect)
 {
-	// if (++tick_count >= 5000 - current_level.enemy_speed) {
-	if (++tick_count >= 100)
-	{ // this should happen every second
-		tick_count = 0;
+	if (++tick_count >= 5000 - current_level.enemy_speed)
+	{
 		enemies_should_move = 1;
+		tick_count = 0;
 	}
 }
 
@@ -915,7 +876,7 @@ int main()
 
 		while (1) // Game loop
 		{
-			if (enemies_should_move)
+			if (enemies_should_move && !player_bullet.active)
 			{
 				enemies_move();
 				enemies_should_move = 0;
