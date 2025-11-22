@@ -6,6 +6,7 @@ AVR_MCU(F_CPU, "atmega128");
 #define __AVR_ATmega128__ 1
 #include <avr/io.h>
 #include <util/delay.h>
+#include <avr/interrupt.h>
 
 // GENERAL INIT - USED BY ALMOST EVERYTHING ----------------------------------
 
@@ -427,15 +428,17 @@ unsigned int rerender = 0;
 unsigned int dynamic_slot = DYNAMIC_SLOT_START_INDEX;
 
 #define LEVELS_COUNT 4
-struct level_t levels[LEVELS_COUNT] = {{0, 16}, {25000, 18}, {50000, 20}, {75000, 22}};
+struct level_t levels[LEVELS_COUNT] = {{0, 16}, {500, 18}, {1000, 20}, {1500, 22}};
 unsigned int current_level_index = 0;
 struct level_t current_level;
+volatile unsigned int tick_count = 0;
 
 struct player_t player;
 struct bullet_t player_bullet;
 struct enemy_t enemies[22];
 enum game_state_t game_state = START_SCREEN;
 unsigned int enemies_killed = 0;
+unsigned int enemies_should_move = 0;
 unsigned int score = 0;
 int enemy_direction = 1;
 
@@ -707,12 +710,16 @@ void player_bullets_move()
 /* Enemies */
 void enemies_init()
 {
+	int columns = current_level.enemy_count / 2;
+
 	for (int i = 0; i < current_level.enemy_count; i++)
 	{
 		enemies[i].alive = 1;
-		enemies[i].sprite = (i % 3) + 1;
-		enemies[i].column = (i % (current_level.enemy_count / 2)) + PLAYFIELD_START_X;
-		enemies[i].half_row = i / (current_level.enemy_count / 2);
+
+		int column = (i % columns);
+		enemies[i].sprite = (column % 3) + 1;
+		enemies[i].column = (i % columns) + PLAYFIELD_START_X;
+		enemies[i].half_row = i / columns;
 	}
 }
 
@@ -853,6 +860,8 @@ void init_game(unsigned int start_new)
 	enemies_init();
 	update_positions(); // also initalizes the positions
 	render_positions();
+	tick_count = 0;
+	enemies_should_move = 0;
 }
 
 void next_level()
@@ -862,6 +871,28 @@ void next_level()
 
 	render_current_level_screen();
 	init_game(0);
+}
+
+void timer_init()
+{
+	TCCR0 |= (1 << WGM01) | (1 << CS00) | (1 << CS02); // set prescaler
+
+	OCR0 = 155;
+
+	TIMSK |= (1 << OCIE0); // enable compare match interrupt
+	TCNT0 = 0;			   // init counter
+
+	sei();
+}
+
+ISR(TIMER0_COMP_vect)
+{
+	// if (++tick_count >= 5000 - current_level.enemy_speed) {
+	if (++tick_count >= 100)
+	{ // this should happen every second
+		tick_count = 0;
+		enemies_should_move = 1;
+	}
 }
 
 int main()
@@ -879,27 +910,26 @@ int main()
 			button_unlock();
 		}
 
+		timer_init();
 		init_game(1);
-		long int delay = 0;
 
 		while (1) // Game loop
 		{
-			if (delay == 300000 - current_level.enemy_speed)
+			if (enemies_should_move)
 			{
 				enemies_move();
-				delay = 0;
+				enemies_should_move = 0;
 			}
-			delay++;
 
-			handle_input(button_pressed());
 			player_bullets_move();
-
 			if (rerender)
 			{
 				update_positions();
 				render_positions();
 				rerender = 0;
 			}
+
+			handle_input(button_pressed());
 
 			if (game_state == GAME_OVER || game_state == VICTORY)
 			{
@@ -912,6 +942,8 @@ int main()
 		char score_buffer[10];
 		sprintf(score_buffer, "SCORE  %d", score);
 
+		init_positions();
+		clear_screen();
 		if (game_state == GAME_OVER)
 		{
 			lcd_send_line1("    GAME OVER");
