@@ -7,6 +7,7 @@ AVR_MCU(F_CPU, "atmega128");
 #include <avr/io.h>
 #include <util/delay.h>
 #include <avr/interrupt.h>
+#include <stdio.h>
 
 // GENERAL INIT - USED BY ALMOST EVERYTHING ----------------------------------
 
@@ -40,28 +41,28 @@ static int button_accept = 1;
 static int button_pressed()
 {
 	// right
-	if (!(PINA & 0b00000001) & button_accept)
+	if ((!(PINA & 0b00000001)) & button_accept)
 	{					   // check state of button 1 and value of button_accept
 		button_accept = 0; // button is pressed
 		return BUTTON_RIGHT;
 	}
 
 	// up
-	if (!(PINA & 0b00000010) & button_accept)
+	if ((!(PINA & 0b00000010)) & button_accept)
 	{					   // check state of button 2 and value of button_accept
 		button_accept = 0; // button is pressed
 		return BUTTON_UP;
 	}
 
 	// center
-	if (!(PINA & 0b00000100) & button_accept)
+	if ((!(PINA & 0b00000100)) & button_accept)
 	{					   // check state of button 3 and value of button_accept
 		button_accept = 0; // button is pressed
 		return BUTTON_CENTER;
 	}
 
 	// left
-	if (!(PINA & 0b00010000) & button_accept)
+	if ((!(PINA & 0b00010000)) & button_accept)
 	{					   // check state of button 5 and value of button_accept
 		button_accept = 0; // button is pressed
 		return BUTTON_LEFT;
@@ -292,7 +293,6 @@ void merge_characters(unsigned char character[8], unsigned char other_character[
 	{
 		character[c] |= other_character[c];
 	}
-	return character;
 }
 
 void shift_character_down(unsigned char character[8], unsigned char shifted_character[8])
@@ -374,7 +374,6 @@ struct level_t
 
 /* Global variables */
 
-// #define ENEMY_COUNT 18
 #define PLAYFIELD_ROWS 2
 #define PLAYFIELD_COLUMNS 16
 
@@ -673,6 +672,7 @@ void player_bullets_move()
 }
 
 /* Enemies */
+
 void enemies_init()
 {
 	int columns = current_level.enemy_count / 2;
@@ -849,7 +849,7 @@ void timer_init()
 
 ISR(TIMER0_COMP_vect)
 {
-	if (++tick_count >= 5000 - current_level.enemy_speed)
+	if (++tick_count >= 3500 - current_level.enemy_speed)
 	{
 		enemies_should_move = 1;
 		tick_count = 0;
